@@ -1,5 +1,44 @@
+/// A Rust library for fuzzy text searching with regex pattern generation.
+/// 
+/// This library provides flexible pattern matching that's tolerant to typos
+/// and variations in text. It uses a builder pattern with compile-time validation
+/// for configuration.
+/// 
+/// # Examples
+/// 
+/// Basic usage:
+/// ```
+/// use fuzzy_search::fuzzy_search_pattern;
+/// use regex::Regex;
+/// 
+/// let pattern = fuzzy_search_pattern("hello world");
+/// let regex = Regex::new(&pattern).unwrap();
+/// 
+/// assert!(regex.is_match("hello world"));
+/// assert!(regex.is_match("HELLO WORLD"));
+/// assert!(regex.is_match("hello there world"));
+/// ```
+/// 
+/// Advanced usage with configuration:
+/// ```
+/// use fuzzy_search::FuzzyConfig;
+/// 
+/// let regex = FuzzyConfig::builder()
+///     .search_term("hello")
+///     .min_word_length(4)
+///     .required_char_ratio(0.7)
+///     .case_sensitive(true)
+///     .build()
+///     .compile()
+///     .unwrap();
+/// 
+/// assert!(regex.is_match("Hello"));
+/// assert!(!regex.is_match("help")); // Won't match due to high ratio requirement
+/// ```
+
 use std::error::Error;
 use std::fmt;
+use typed_builder::TypedBuilder;
 
 /// Custom error types for fuzzy search operations
 #[derive(Debug)]
@@ -27,78 +66,40 @@ impl From<regex::Error> for FuzzyError {
     }
 }
 
-/// Configuration options for fuzzy search
-#[derive(Debug, Clone)]
+/// Configuration options for fuzzy search pattern generation
+#[derive(Debug, Clone, TypedBuilder)]
+#[builder(doc)]
 pub struct FuzzyConfig {
-    /// Minimum word length for applying typo tolerance
-    pub min_word_length: usize,
-    /// Required character ratio for longer words (0.0 to 1.0)
-    pub required_char_ratio: f32,
-    /// Whether to enable case-sensitive matching
-    pub case_sensitive: bool,
-    /// Maximum allowed character gap
-    pub max_char_gap: usize,
-}
-
-impl Default for FuzzyConfig {
-    fn default() -> Self {
-        Self {
-            min_word_length: 3,
-            required_char_ratio: 0.5,
-            case_sensitive: false,
-            max_char_gap: 10,
-        }
-    }
-}
-
-/// A builder for creating customized fuzzy search patterns
-#[derive(Debug)]
-pub struct FuzzySearchBuilder {
-    config: FuzzyConfig,
+    /// Search term to create pattern for
+    #[builder(setter(into))]
     search_term: String,
+
+    /// Minimum word length for applying typo tolerance
+    #[builder(default = 3)]
+    min_word_length: usize,
+
+    /// Required character ratio for longer words (0.0 to 1.0)
+    #[builder(default = 0.5, setter(transform = |v: f32| v.clamp(0.0, 1.0)))]
+    required_char_ratio: f32,
+
+    /// Whether to enable case-sensitive matching
+    #[builder(default = false)]
+    case_sensitive: bool,
+
+    /// Maximum allowed character gap
+    #[builder(default = 10)]
+    max_char_gap: usize,
 }
 
-impl FuzzySearchBuilder {
-    /// Create a new builder instance
-    pub fn new(search_term: impl Into<String>) -> Self {
-        Self {
-            config: FuzzyConfig::default(),
-            search_term: search_term.into(),
-        }
+impl FuzzyConfig {
+    /// Creates a pattern based on the configuration
+    pub fn build_pattern(&self) -> Result<String, FuzzyError> {
+        create_fuzzy_pattern(&self.search_term, self)
     }
 
-    /// Set minimum word length for typo tolerance
-    pub fn min_word_length(mut self, length: usize) -> Self {
-        self.config.min_word_length = length;
-        self
-    }
-
-    /// Set required character ratio for longer words
-    pub fn required_char_ratio(mut self, ratio: f32) -> Self {
-        self.config.required_char_ratio = ratio.clamp(0.0, 1.0);
-        self
-    }
-
-    /// Enable or disable case sensitivity
-    pub fn case_sensitive(mut self, sensitive: bool) -> Self {
-        self.config.case_sensitive = sensitive;
-        self
-    }
-
-    /// Set maximum character gap
-    pub fn max_char_gap(mut self, gap: usize) -> Self {
-        self.config.max_char_gap = gap;
-        self
-    }
-
-    /// Build the regex pattern
-    pub fn build(&self) -> Result<String, FuzzyError> {
-        create_fuzzy_pattern(&self.search_term, &self.config)
-    }
-
-    /// Build and compile the regex
+    /// Creates and compiles a regex based on the configuration
     pub fn compile(&self) -> Result<regex::Regex, FuzzyError> {
-        let pattern = self.build()?;
+        let pattern = self.build_pattern()?;
         Ok(regex::Regex::new(&pattern)?)
     }
 }
@@ -143,19 +144,25 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
 
 /// Simplified function for quick fuzzy pattern generation with default settings
 pub fn fuzzy_search_pattern(search_term: &str) -> String {
-    FuzzySearchBuilder::new(search_term)
+    FuzzyConfig::builder()
+        .search_term(search_term)
         .build()
+        .build_pattern()
         .unwrap_or_else(|_| "".to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FuzzySearchBuilder;
+    use super::*;
     use regex::Regex;
 
     #[test]
     fn test_single_word_pattern() {
-        let pattern = FuzzySearchBuilder::new("hello").build().unwrap();
+        let pattern = FuzzyConfig::builder()
+            .search_term("hello")
+            .build()
+            .build_pattern()
+            .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("hello"));
@@ -167,7 +174,11 @@ mod tests {
 
     #[test]
     fn test_multi_word_pattern() {
-        let pattern = FuzzySearchBuilder::new("hello world").build().unwrap();
+        let pattern = FuzzyConfig::builder()
+            .search_term("hello world")
+            .build()
+            .build_pattern()
+            .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("hello world"));
@@ -180,7 +191,11 @@ mod tests {
 
     #[test]
     fn test_short_word_pattern() {
-        let pattern = FuzzySearchBuilder::new("hi").build().unwrap();
+        let pattern = FuzzyConfig::builder()
+            .search_term("hi")
+            .build()
+            .build_pattern()
+            .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("hi"));
@@ -192,7 +207,11 @@ mod tests {
 
     #[test]
     fn test_long_word_pattern() {
-        let pattern = FuzzySearchBuilder::new("programming").build().unwrap();
+        let pattern = FuzzyConfig::builder()
+            .search_term("programming")
+            .build()
+            .build_pattern()
+            .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("programming"));
@@ -203,9 +222,11 @@ mod tests {
 
     #[test]
     fn test_case_sensitivity() {
-        let pattern = FuzzySearchBuilder::new("Test")
+        let pattern = FuzzyConfig::builder()
+            .search_term("Test")
             .case_sensitive(true)
             .build()
+            .build_pattern()
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
@@ -217,11 +238,13 @@ mod tests {
 
     #[test]
     fn test_custom_config() {
-        let pattern = FuzzySearchBuilder::new("hello")
+        let pattern = FuzzyConfig::builder()
+            .search_term("hello")
             .min_word_length(5)
             .required_char_ratio(0.8)
             .max_char_gap(2)
             .build()
+            .build_pattern()
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
@@ -232,25 +255,33 @@ mod tests {
 
     #[test]
     fn test_empty_pattern() {
-        let result = FuzzySearchBuilder::new("").build();
-        assert!(matches!(result, Err(super::FuzzyError::InvalidPattern(_))));
+        let result = FuzzyConfig::builder()
+            .search_term("")
+            .build()
+            .build_pattern();
+        assert!(matches!(result, Err(FuzzyError::InvalidPattern(_))));
     }
 
     #[test]
     fn test_whitespace_only_pattern() {
-        let result = FuzzySearchBuilder::new("   ").build();
-        assert!(matches!(result, Err(super::FuzzyError::InvalidPattern(_))));
+        let result = FuzzyConfig::builder()
+            .search_term("   ")
+            .build()
+            .build_pattern();
+        assert!(matches!(result, Err(FuzzyError::InvalidPattern(_))));
     }
 
     #[test]
     fn test_builder_methods() {
-        let builder = FuzzySearchBuilder::new("test")
+        let config = FuzzyConfig::builder()
+            .search_term("test")
             .min_word_length(4)
             .required_char_ratio(0.75)
             .case_sensitive(true)
-            .max_char_gap(3);
+            .max_char_gap(3)
+            .build();
 
-        let pattern = builder.build().unwrap();
+        let pattern = config.build_pattern().unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("test"));

@@ -40,19 +40,21 @@ fn main() {
 }
 ```
 
-### Advanced Usage with Builder Pattern
+### Advanced Usage with Typed Builder
 
 ```rust
-use fuzzy_search::FuzzySearchBuilder;
+use fuzzy_search::FuzzyConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a custom fuzzy search pattern
-    let regex = FuzzySearchBuilder::new("hello world")
-        .min_word_length(4)           // Custom minimum word length
-        .required_char_ratio(0.7)     // Require 70% of characters to match
-        .case_sensitive(true)         // Enable case sensitivity
-        .max_char_gap(5)             // Maximum gap between characters
-        .compile()?;                  // Build and compile the regex
+    // Create a custom fuzzy search pattern with compile-time validation
+    let regex = FuzzyConfig::builder()
+        .search_term("hello world")    // Required field
+        .min_word_length(4)           // Optional with default = 3
+        .required_char_ratio(0.7)     // Optional with default = 0.5
+        .case_sensitive(true)         // Optional with default = false
+        .max_char_gap(5)             // Optional with default = 10
+        .build()                     // Build the config
+        .compile()?;                 // Compile into regex
 
     assert!(regex.is_match("Hello World"));
     assert!(!regex.is_match("hello world")); // Won't match due to case sensitivity
@@ -62,8 +64,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Configuration Options ⚙️
 
-The `FuzzySearchBuilder` provides several configuration options:
+The `FuzzyConfig` builder provides several configuration options with compile-time validation:
 
+- `search_term`: The search term to create pattern for (required)
 - `min_word_length`: Minimum word length for applying typo tolerance (default: 3)
 - `required_char_ratio`: Required character ratio for longer words (default: 0.5)
 - `case_sensitive`: Enable/disable case sensitivity (default: false)
@@ -82,9 +85,10 @@ pub enum FuzzyError {
 
 ## Performance Considerations 🚀
 
-- The builder pattern allows for pattern reuse
-- Compiled regex patterns can be cached for repeated use
+- Compile-time validation prevents runtime errors
+- Type-safe builder pattern ensures correct configuration
 - Configurable character gap limits help control matching performance
+- Compiled regex patterns can be cached for repeated use
 
 ## How It Works 🛠️
 
