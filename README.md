@@ -23,21 +23,68 @@ regex = "1.9.0"
 
 ## Usage 🚀
 
+### Basic Usage
+
 ```rust
 use fuzzy_search::fuzzy_search_pattern;
 use regex::Regex;
 
 fn main() {
-    // Generate a fuzzy search pattern
+    // Quick pattern generation with default settings
     let pattern = fuzzy_search_pattern("hello world");
     let regex = Regex::new(&pattern).unwrap();
 
-    // Test various matches
     assert!(regex.is_match("hello world"));     // Exact match
     assert!(regex.is_match("HELLO WORLD"));     // Case insensitive
     assert!(regex.is_match("hello there world")); // Words with content between
 }
 ```
+
+### Advanced Usage with Builder Pattern
+
+```rust
+use fuzzy_search::FuzzySearchBuilder;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a custom fuzzy search pattern
+    let regex = FuzzySearchBuilder::new("hello world")
+        .min_word_length(4)           // Custom minimum word length
+        .required_char_ratio(0.7)     // Require 70% of characters to match
+        .case_sensitive(true)         // Enable case sensitivity
+        .max_char_gap(5)             // Maximum gap between characters
+        .compile()?;                  // Build and compile the regex
+
+    assert!(regex.is_match("Hello World"));
+    assert!(!regex.is_match("hello world")); // Won't match due to case sensitivity
+    Ok(())
+}
+```
+
+## Configuration Options ⚙️
+
+The `FuzzySearchBuilder` provides several configuration options:
+
+- `min_word_length`: Minimum word length for applying typo tolerance (default: 3)
+- `required_char_ratio`: Required character ratio for longer words (default: 0.5)
+- `case_sensitive`: Enable/disable case sensitivity (default: false)
+- `max_char_gap`: Maximum allowed character gap (default: 10)
+
+## Error Handling 🛡️
+
+The library provides a custom error type `FuzzyError` for proper error handling:
+
+```rust
+pub enum FuzzyError {
+    InvalidPattern(String),
+    RegexError(regex::Error),
+}
+```
+
+## Performance Considerations 🚀
+
+- The builder pattern allows for pattern reuse
+- Compiled regex patterns can be cached for repeated use
+- Configurable character gap limits help control matching performance
 
 ## How It Works 🛠️
 
