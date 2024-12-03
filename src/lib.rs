@@ -112,56 +112,126 @@ fn create_fuzzy_pattern(search_term: &str, config: &FuzzyConfig) -> Result<Strin
         ));
     }
 
+    // Split on whitespace but preserve punctuation
     let words: Vec<String> = search_term
         .split_whitespace()
-        .map(|word| create_word_pattern(word, config))
-        .collect();
-
-    let case_flag = if !config.case_sensitive { "(?i)" } else { "" };
-    // Add word boundary and flexible whitespace matching with optional special characters
-    Ok(format!(
-        "{}(?s).*?{}.*?",
-        case_flag,
-        words.join(r"[\s\S]*?")
-    ))
-}
-
-/// Creates a pattern for a single word
-fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
-    let chars: Vec<_> = word
-        .chars()
-        .map(|c| {
-            let escaped = regex::escape(&c.to_string());
-            if c.is_ascii_punctuation() {
-                format!("(?:{})?", escaped)
+        .map(|word| {
+            if word.chars().any(|c| c.is_ascii_punctuation()) {
+                // For words with punctuation, create a pattern that allows matching with or without the punctuation
+                let parts: Vec<String> = word
+                    .split(|c: char| c.is_ascii_punctuation())
+                    .filter(|s| !s.is_empty())
+                    .map(|part| create_word_pattern(part, config))
+                    .collect();
+                parts.join("[\\s\\p{Z}\\p{C}]*")
             } else {
-                escaped
+                create_word_pattern(word, config)
             }
         })
         .collect();
 
-    let gap_pattern = if config.max_char_gap > 0 {
-        format!("[\\s\\S]{{0,{}}}", config.max_char_gap)
+    let case_flag = if !config.case_sensitive { "(?i)" } else { "" };
+    // For multiple words, require all words to be present with flexible whitespace
+    if words.len() > 1 {
+        Ok(format!(
+            "{}(?s).*?{}.*?",
+            case_flag,
+            words.join("[\\s\\p{Z}\\p{C}]+.*?")
+        ))
     } else {
+        Ok(format!("{}(?s).*?{}.*?", case_flag, words[0]))
+    }
+}
+
+/// Creates a pattern for a single word
+fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
+    println!("Creating pattern for word: {}", word);
+    println!(
+        "Config: max_char_gap={}, min_word_length={}, required_char_ratio={}",
+        config.max_char_gap, config.min_word_length, config.required_char_ratio
+    );
+
+    // Special handling for single character inputs
+    if word.chars().count() == 1 {
+        let char_pattern = regex::escape(word);
+        return format!("(?:[^\\s]*?{}[^\\s]*?)", char_pattern);
+    }
+
+    let chars: Vec<_> = word
+        .chars()
+        .map(|c| {
+            let escaped = regex::escape(&c.to_string());
+            if c.is_ascii_punctuation() || c.is_ascii_digit() || !c.is_ascii() {
+                format!("(?:{})?", escaped)
+            } else if config.case_sensitive {
+                escaped
+            } else {
+                format!("[{}{}]", c.to_lowercase(), c.to_uppercase())
+            }
+        })
+        .collect();
+    println!("Processed chars: {:?}", chars);
+
+    // Create gap patterns based on configuration
+    let between_pattern = if config.max_char_gap > 0 {
+        // When max_char_gap is set, allow any characters within the limit
+        if config.max_char_gap > 10 {
+            // For large gaps, allow any characters including spaces
+            format!(".{{0,{}}}", config.max_char_gap)
+        } else {
+            // For small gaps, only allow non-space characters
+            format!("[^\\s]{{0,{}}}", config.max_char_gap)
+        }
+    } else {
+        // When max_char_gap is 0, don't allow any characters between
         "".to_string()
     };
 
-    let char_pattern = if chars.len() <= config.min_word_length {
-        // For short words, make the pattern more flexible but respect max_char_gap
-        chars.join(&gap_pattern)
+    println!("Between pattern: {}", between_pattern);
+
+    // For high required_char_ratio, enforce stricter matching but still allow some flexibility
+    let char_pattern = if config.required_char_ratio > 0.9 {
+        // Require all characters with optional gaps
+        let mut pattern = String::new();
+        for (i, c) in chars.iter().enumerate() {
+            if i > 0 {
+                pattern.push_str(&between_pattern);
+            }
+            pattern.push_str(c);
+        }
+        pattern
     } else {
-        // For longer words, require a certain ratio of characters
-        let required_count = (chars.len() as f32 * config.required_char_ratio) as usize;
-        let required_chars = &chars[..required_count.max(1)];
-        required_chars.join(&gap_pattern)
+        // Allow flexible matching based on word length and required ratio
+        let required_chars = (chars.len() as f32 * config.required_char_ratio).ceil() as usize;
+        let (required, optional) = chars.split_at(required_chars);
+
+        let mut pattern = String::new();
+        // Add required characters with flexible gaps
+        for (i, c) in required.iter().enumerate() {
+            if i > 0 {
+                pattern.push_str(&between_pattern);
+            }
+            pattern.push_str(c);
+        }
+
+        // Add optional characters
+        if !optional.is_empty() {
+            pattern.push_str("(?:");
+            for (i, c) in optional.iter().enumerate() {
+                if i > 0 {
+                    pattern.push_str(&between_pattern);
+                }
+                pattern.push_str(&format!("{}?", c));
+            }
+            pattern.push_str(")?");
+        }
+        pattern
     };
 
-    // Allow optional punctuation and spaces within words while maintaining boundaries
-    if config.max_char_gap > 0 {
-        format!("(?:[\\s\\S]*?{}[\\s\\S]*?)", char_pattern)
-    } else {
-        format!("(?:{})", char_pattern)
-    }
+    // Create the final pattern with appropriate word boundaries
+    let final_pattern = format!("(?:{})", char_pattern);
+    println!("Final word pattern: {}", final_pattern);
+    final_pattern
 }
 
 /// Simplified function for quick fuzzy pattern generation with default settings
@@ -259,7 +329,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_custom_config() {
         let pattern = FuzzyConfig::builder()
             .search_term("hello")
@@ -269,11 +338,16 @@ mod tests {
             .build()
             .build_pattern()
             .unwrap();
+        println!("Generated pattern: {}", pattern);
         let regex = Regex::new(&pattern).unwrap();
 
         assert!(regex.is_match("hello"));
         assert!(regex.is_match("heello")); // small gap
         assert!(!regex.is_match("h e l l o")); // too big gaps
+
+        // Debug prints for failing case
+        println!("Testing 'h e l l o' against pattern");
+        println!("Pattern matches: {}", regex.is_match("h e l l o"));
     }
 
     #[test]
