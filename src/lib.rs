@@ -1,3 +1,4 @@
+use log::{debug, error, warn};
 /// A Rust library for fuzzy text searching with regex pattern generation.
 ///
 /// This library provides flexible pattern matching that's tolerant to typos
@@ -47,6 +48,8 @@ pub enum FuzzyError {
     InvalidPattern(String),
     /// Regex compilation error
     RegexError(regex::Error),
+    /// Empty pattern
+    EmptyPattern,
 }
 
 impl fmt::Display for FuzzyError {
@@ -54,6 +57,7 @@ impl fmt::Display for FuzzyError {
         match self {
             FuzzyError::InvalidPattern(msg) => write!(f, "Invalid pattern: {}", msg),
             FuzzyError::RegexError(err) => write!(f, "Regex error: {}", err),
+            FuzzyError::EmptyPattern => write!(f, "Empty pattern"),
         }
     }
 }
@@ -62,7 +66,8 @@ impl Error for FuzzyError {}
 
 impl From<regex::Error> for FuzzyError {
     fn from(err: regex::Error) -> Self {
-        FuzzyError::RegexError(err)
+        error!("Regex error: {}", err);
+        FuzzyError::InvalidPattern(err.to_string())
     }
 }
 
@@ -106,15 +111,37 @@ impl FuzzyConfig {
 
 /// Creates a fuzzy search pattern with custom configuration
 fn create_fuzzy_pattern(search_term: &str, config: &FuzzyConfig) -> Result<String, FuzzyError> {
+    // Validate search term
     if search_term.trim().is_empty() {
-        return Err(FuzzyError::InvalidPattern(
-            "Search term cannot be empty".into(),
-        ));
+        error!("Empty search term provided");
+        return Err(FuzzyError::EmptyPattern);
+    }
+
+    // Split search term into words
+    let words: Vec<_> = search_term
+        .split_whitespace()
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    if words.is_empty() {
+        error!("No valid words found in search term");
+        return Err(FuzzyError::EmptyPattern);
+    }
+
+    // Check minimum word length requirement
+    if words
+        .iter()
+        .any(|w| w.chars().count() < config.min_word_length)
+    {
+        warn!(
+            "Words shorter than minimum length {}: {:?}",
+            config.min_word_length, words
+        );
     }
 
     // Split on whitespace but preserve punctuation
-    let words: Vec<String> = search_term
-        .split_whitespace()
+    let words: Vec<String> = words
+        .into_iter()
         .map(|word| {
             if word.chars().any(|c| c.is_ascii_punctuation()) {
                 // For words with punctuation, create a pattern that allows matching with or without the punctuation
@@ -145,8 +172,8 @@ fn create_fuzzy_pattern(search_term: &str, config: &FuzzyConfig) -> Result<Strin
 
 /// Creates a pattern for a single word
 fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
-    println!("Creating pattern for word: {}", word);
-    println!(
+    debug!("Creating pattern for word: {}", word);
+    debug!(
         "Config: max_char_gap={}, min_word_length={}, required_char_ratio={}",
         config.max_char_gap, config.min_word_length, config.required_char_ratio
     );
@@ -154,6 +181,7 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
     // Special handling for single character inputs
     if word.chars().count() == 1 {
         let char_pattern = regex::escape(word);
+        debug!("Single character pattern: {}", char_pattern);
         return format!("(?:[^\\s]*?{}[^\\s]*?)", char_pattern);
     }
 
@@ -162,35 +190,56 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
         .map(|c| {
             let escaped = regex::escape(&c.to_string());
             if c.is_ascii_punctuation() || c.is_ascii_digit() || !c.is_ascii() {
+                debug!("Special character '{}' escaped as: {}", c, escaped);
                 format!("(?:{})?", escaped)
             } else if config.case_sensitive {
+                debug!("Case-sensitive character '{}' escaped as: {}", c, escaped);
                 escaped
             } else {
+                debug!(
+                    "Case-insensitive character '{}' pattern: [{}{}]",
+                    c,
+                    c.to_lowercase(),
+                    c.to_uppercase()
+                );
                 format!("[{}{}]", c.to_lowercase(), c.to_uppercase())
             }
         })
         .collect();
-    println!("Processed chars: {:?}", chars);
+    debug!("Processed chars: {:?}", chars);
 
     // Create gap patterns based on configuration
     let between_pattern = if config.max_char_gap > 0 {
         // When max_char_gap is set, allow any characters within the limit
         if config.max_char_gap > 10 {
             // For large gaps, allow any characters including spaces
+            debug!(
+                "Using large gap pattern with max_char_gap={}",
+                config.max_char_gap
+            );
             format!(".{{0,{}}}", config.max_char_gap)
         } else {
             // For small gaps, only allow non-space characters
+            debug!(
+                "Using small gap pattern with max_char_gap={}",
+                config.max_char_gap
+            );
             format!("[^\\s]{{0,{}}}", config.max_char_gap)
         }
     } else {
         // When max_char_gap is 0, don't allow any characters between
+        debug!("Using zero gap pattern");
         "".to_string()
     };
 
-    println!("Between pattern: {}", between_pattern);
+    debug!("Between pattern: {}", between_pattern);
 
     // For high required_char_ratio, enforce stricter matching but still allow some flexibility
     let char_pattern = if config.required_char_ratio > 0.9 {
+        debug!(
+            "Using strict pattern with required_char_ratio={}",
+            config.required_char_ratio
+        );
         // Require all characters with optional gaps
         let mut pattern = String::new();
         for (i, c) in chars.iter().enumerate() {
@@ -203,6 +252,10 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
     } else {
         // Allow flexible matching based on word length and required ratio
         let required_chars = (chars.len() as f32 * config.required_char_ratio).ceil() as usize;
+        debug!(
+            "Using flexible pattern with required_char_ratio={}, required_chars={}",
+            config.required_char_ratio, required_chars
+        );
         let (required, optional) = chars.split_at(required_chars);
 
         let mut pattern = String::new();
@@ -216,6 +269,7 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
 
         // Add optional characters
         if !optional.is_empty() {
+            debug!("Adding {} optional characters", optional.len());
             pattern.push_str("(?:");
             for (i, c) in optional.iter().enumerate() {
                 if i > 0 {
@@ -230,7 +284,7 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
 
     // Create the final pattern with appropriate word boundaries
     let final_pattern = format!("(?:{})", char_pattern);
-    println!("Final word pattern: {}", final_pattern);
+    debug!("Final word pattern: {}", final_pattern);
     final_pattern
 }
 
@@ -356,7 +410,7 @@ mod tests {
             .search_term("")
             .build()
             .build_pattern();
-        assert!(matches!(result, Err(FuzzyError::InvalidPattern(_))));
+        assert!(matches!(result, Err(FuzzyError::EmptyPattern)));
     }
 
     #[test]
@@ -365,7 +419,7 @@ mod tests {
             .search_term("   ")
             .build()
             .build_pattern();
-        assert!(matches!(result, Err(FuzzyError::InvalidPattern(_))));
+        assert!(matches!(result, Err(FuzzyError::EmptyPattern)));
     }
 
     #[test]
@@ -518,5 +572,30 @@ mod tests {
         assert!(regex.is_match("test123 456"));
         assert!(regex.is_match("test 123 456"));
         assert!(regex.is_match("TEST123 456"));
+    }
+
+    #[test]
+    fn test_logging() {
+        use env_logger;
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let pattern = FuzzyConfig::builder()
+            .search_term("test")
+            .max_char_gap(2)
+            .min_word_length(3)
+            .required_char_ratio(0.8)
+            .build()
+            .build_pattern()
+            .unwrap();
+
+        let regex = Regex::new(&pattern).unwrap();
+        assert!(regex.is_match("test"));
+
+        // Test error logging
+        let result = FuzzyConfig::builder()
+            .search_term("")
+            .build()
+            .build_pattern();
+        assert!(matches!(result, Err(FuzzyError::EmptyPattern)));
     }
 }
