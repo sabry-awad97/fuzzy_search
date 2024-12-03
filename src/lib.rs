@@ -9,20 +9,22 @@ use log::{debug, error, warn};
 ///
 /// ```
 /// use fuzzy_search::FuzzyConfig;
+/// use fancy_regex::Regex;
 ///
 /// let config = FuzzyConfig::builder()
 ///     .search_term("hello")
 ///     .build();
 ///
 /// let pattern = config.build_pattern().unwrap();
-/// let regex = regex::Regex::new(&pattern).unwrap();
-/// assert!(regex.is_match("hello"));
-/// assert!(regex.is_match("heello")); // small gap
+/// let regex = Regex::new(&pattern).unwrap();
+/// assert!(regex.is_match("hello").unwrap());
+/// assert!(regex.is_match("heello").unwrap()); // small gap
 /// ```
 ///
 /// Advanced usage with configuration:
 /// ```
 /// use fuzzy_search::FuzzyConfig;
+/// use fancy_regex::Regex;
 ///
 /// let config = FuzzyConfig::builder()
 ///     .search_term("hello")
@@ -33,9 +35,9 @@ use log::{debug, error, warn};
 ///     .build();
 ///
 /// let pattern = config.build_pattern().unwrap();
-/// let regex = regex::Regex::new(&pattern).unwrap();
-/// assert!(regex.is_match("hello"));
-/// assert!(regex.is_match("heello")); // small gap
+/// let regex = Regex::new(&pattern).unwrap();
+/// assert!(regex.is_match("hello").unwrap());
+/// assert!(regex.is_match("heello").unwrap()); // small gap
 /// ```
 use std::error::Error;
 use std::fmt;
@@ -47,7 +49,7 @@ pub enum FuzzyError {
     /// Invalid search pattern
     InvalidPattern(String),
     /// Regex compilation error
-    RegexError(regex::Error),
+    RegexError(Box<fancy_regex::Error>),
     /// Empty pattern
     EmptyPattern,
 }
@@ -64,10 +66,10 @@ impl fmt::Display for FuzzyError {
 
 impl Error for FuzzyError {}
 
-impl From<regex::Error> for FuzzyError {
-    fn from(err: regex::Error) -> Self {
+impl From<fancy_regex::Error> for FuzzyError {
+    fn from(err: fancy_regex::Error) -> Self {
         error!("Regex error: {}", err);
-        FuzzyError::InvalidPattern(err.to_string())
+        FuzzyError::RegexError(Box::new(err))
     }
 }
 
@@ -103,9 +105,9 @@ impl FuzzyConfig {
     }
 
     /// Creates and compiles a regex based on the configuration
-    pub fn compile(&self) -> Result<regex::Regex, FuzzyError> {
+    pub fn compile(&self) -> Result<fancy_regex::Regex, FuzzyError> {
         let pattern = self.build_pattern()?;
-        Ok(regex::Regex::new(&pattern)?)
+        Ok(fancy_regex::Regex::new(&pattern)?)
     }
 }
 
@@ -180,7 +182,7 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
 
     // Special handling for single character inputs
     if word.chars().count() == 1 {
-        let char_pattern = regex::escape(word);
+        let char_pattern = fancy_regex::escape(word);
         debug!("Single character pattern: {}", char_pattern);
         return format!("(?:[^\\s]*?{}[^\\s]*?)", char_pattern);
     }
@@ -188,13 +190,14 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
     let chars: Vec<_> = word
         .chars()
         .map(|c| {
-            let escaped = regex::escape(&c.to_string());
+            let c_str = c.to_string();
+            let escaped = fancy_regex::escape(&c_str);
             if c.is_ascii_punctuation() || c.is_ascii_digit() || !c.is_ascii() {
                 debug!("Special character '{}' escaped as: {}", c, escaped);
                 format!("(?:{})?", escaped)
             } else if config.case_sensitive {
                 debug!("Case-sensitive character '{}' escaped as: {}", c, escaped);
-                escaped
+                escaped.into_owned()
             } else {
                 debug!(
                     "Case-insensitive character '{}' pattern: [{}{}]",
@@ -202,7 +205,9 @@ fn create_word_pattern(word: &str, config: &FuzzyConfig) -> String {
                     c.to_lowercase(),
                     c.to_uppercase()
                 );
-                format!("[{}{}]", c.to_lowercase(), c.to_uppercase())
+                let lower: String = c.to_lowercase().collect();
+                let upper: String = c.to_uppercase().collect();
+                format!("[{}{}]", lower, upper)
             }
         })
         .collect();
@@ -300,7 +305,7 @@ pub fn fuzzy_search_pattern(search_term: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use regex::Regex;
+    use fancy_regex::Regex;
 
     #[test]
     fn test_single_word_pattern() {
@@ -311,11 +316,11 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hello"));
-        assert!(regex.is_match("HELLO"));
-        assert!(regex.is_match("hello world"));
-        assert!(regex.is_match("say hello there"));
-        assert!(regex.is_match("heeello")); // with extra chars
+        assert!(regex.is_match("hello").unwrap());
+        assert!(regex.is_match("HELLO").unwrap());
+        assert!(regex.is_match("hello world").unwrap());
+        assert!(regex.is_match("say hello there").unwrap());
+        assert!(regex.is_match("heeello").unwrap()); // with extra chars
     }
 
     #[test]
@@ -327,12 +332,12 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hello world"));
-        assert!(regex.is_match("HELLO WORLD"));
-        assert!(regex.is_match("hello there world"));
-        assert!(regex.is_match("My hello to the world"));
-        assert!(!regex.is_match("hello")); // missing second word
-        assert!(!regex.is_match("world")); // missing first word
+        assert!(regex.is_match("hello world").unwrap());
+        assert!(regex.is_match("HELLO WORLD").unwrap());
+        assert!(regex.is_match("hello there world").unwrap());
+        assert!(regex.is_match("My hello to the world").unwrap());
+        assert!(!regex.is_match("hello").unwrap()); // missing second word
+        assert!(!regex.is_match("world").unwrap()); // missing first word
     }
 
     #[test]
@@ -344,11 +349,11 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hi"));
-        assert!(regex.is_match("HI"));
-        assert!(regex.is_match("this"));
-        assert!(regex.is_match("history"));
-        assert!(regex.is_match("hi there"));
+        assert!(regex.is_match("hi").unwrap());
+        assert!(regex.is_match("HI").unwrap());
+        assert!(regex.is_match("this").unwrap());
+        assert!(regex.is_match("history").unwrap());
+        assert!(regex.is_match("hi there").unwrap());
     }
 
     #[test]
@@ -360,10 +365,10 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("programming"));
-        assert!(regex.is_match("PROGRAMMING"));
-        assert!(regex.is_match("programmming")); // typo
-        assert!(regex.is_match("program")); // partial match is ok
+        assert!(regex.is_match("programming").unwrap());
+        assert!(regex.is_match("PROGRAMMING").unwrap());
+        assert!(regex.is_match("programmming").unwrap()); // typo
+        assert!(regex.is_match("program").unwrap()); // partial match is ok
     }
 
     #[test]
@@ -376,10 +381,10 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("Test"));
-        assert!(!regex.is_match("test"));
-        assert!(!regex.is_match("TEST"));
-        assert!(!regex.is_match("testing"));
+        assert!(regex.is_match("Test").unwrap());
+        assert!(!regex.is_match("test").unwrap());
+        assert!(!regex.is_match("TEST").unwrap());
+        assert!(!regex.is_match("testing").unwrap());
     }
 
     #[test]
@@ -395,13 +400,13 @@ mod tests {
         println!("Generated pattern: {}", pattern);
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hello"));
-        assert!(regex.is_match("heello")); // small gap
-        assert!(!regex.is_match("h e l l o")); // too big gaps
+        assert!(regex.is_match("hello").unwrap());
+        assert!(regex.is_match("heello").unwrap()); // small gap
+        assert!(!regex.is_match("h e l l o").unwrap()); // too big gaps
 
         // Debug prints for failing case
         println!("Testing 'h e l l o' against pattern");
-        println!("Pattern matches: {}", regex.is_match("h e l l o"));
+        println!("Pattern matches: {}", regex.is_match("h e l l o").unwrap());
     }
 
     #[test]
@@ -435,8 +440,8 @@ mod tests {
         let pattern = config.build_pattern().unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("test"));
-        assert!(!regex.is_match("TEST")); // case sensitive
+        assert!(regex.is_match("test").unwrap());
+        assert!(!regex.is_match("TEST").unwrap()); // case sensitive
     }
 
     #[test]
@@ -448,9 +453,9 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hello.world$^"));
-        assert!(regex.is_match("hello world")); // Still matches without special chars
-        assert!(regex.is_match("hello...world")); // Matches with extra dots
+        assert!(regex.is_match("hello.world$^").unwrap());
+        assert!(regex.is_match("hello world").unwrap()); // Still matches without special chars
+        assert!(regex.is_match("hello...world").unwrap()); // Matches with extra dots
     }
 
     #[test]
@@ -462,9 +467,9 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("привет мир"));
-        assert!(regex.is_match("ПРИВЕТ МИР"));
-        assert!(regex.is_match("привет добрый мир"));
+        assert!(regex.is_match("привет мир").unwrap());
+        assert!(regex.is_match("ПРИВЕТ МИР").unwrap());
+        assert!(regex.is_match("привет добрый мир").unwrap());
     }
 
     #[test]
@@ -477,8 +482,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("t e s t"));
-        assert!(regex.is_match("t....e....s....t"));
+        assert!(regex.is_match("t e s t").unwrap());
+        assert!(regex.is_match("t....e....s....t").unwrap());
 
         // Test with minimum gap
         let pattern = FuzzyConfig::builder()
@@ -489,8 +494,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("test"));
-        assert!(!regex.is_match("t e s t"));
+        assert!(regex.is_match("test").unwrap());
+        assert!(!regex.is_match("t e s t").unwrap());
     }
 
     #[test]
@@ -503,8 +508,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("a"));
-        assert!(regex.is_match("abc"));
+        assert!(regex.is_match("a").unwrap());
+        assert!(regex.is_match("abc").unwrap());
 
         // Very long word
         let long_word = "a".repeat(100);
@@ -515,8 +520,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match(&long_word));
-        assert!(regex.is_match(&format!("{}b", &long_word)));
+        assert!(regex.is_match(&long_word).unwrap());
+        assert!(regex.is_match(&format!("{}b", &long_word)).unwrap());
     }
 
     #[test]
@@ -530,8 +535,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("test"));
-        assert!(!regex.is_match("tes")); // Won't match with missing char
+        assert!(regex.is_match("test").unwrap());
+        assert!(!regex.is_match("tes").unwrap()); // Won't match with missing char
 
         // Test with minimum ratio
         let pattern = FuzzyConfig::builder()
@@ -542,8 +547,8 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("test"));
-        assert!(regex.is_match("t")); // Matches with just first char
+        assert!(regex.is_match("test").unwrap());
+        assert!(regex.is_match("t").unwrap()); // Matches with just first char
     }
 
     #[test]
@@ -555,9 +560,9 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("hello world"));
-        assert!(regex.is_match("hello   world"));
-        assert!(regex.is_match("hello \t\n world")); // Different whitespace
+        assert!(regex.is_match("hello world").unwrap());
+        assert!(regex.is_match("hello   world").unwrap());
+        assert!(regex.is_match("hello \t\n world").unwrap()); // Different whitespace
     }
 
     #[test]
@@ -569,9 +574,9 @@ mod tests {
             .unwrap();
         let regex = Regex::new(&pattern).unwrap();
 
-        assert!(regex.is_match("test123 456"));
-        assert!(regex.is_match("test 123 456"));
-        assert!(regex.is_match("TEST123 456"));
+        assert!(regex.is_match("test123 456").unwrap());
+        assert!(regex.is_match("test 123 456").unwrap());
+        assert!(regex.is_match("TEST123 456").unwrap());
     }
 
     #[test]
@@ -589,7 +594,7 @@ mod tests {
             .unwrap();
 
         let regex = Regex::new(&pattern).unwrap();
-        assert!(regex.is_match("test"));
+        assert!(regex.is_match("test").unwrap());
 
         // Test error logging
         let result = FuzzyConfig::builder()

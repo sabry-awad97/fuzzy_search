@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-regex = "1.11.1"
-typed-builder = "0.20.0"
-log = "0.4.22"
+fancy-regex = "0.14.0"
+log = "0.4.20"
+typed-builder = "0.18.0"
 
 [dev-dependencies]
 env_logger = "0.11.5"
